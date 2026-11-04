@@ -50,6 +50,8 @@ def async_setup(hass: HomeAssistant) -> bool:
 class EditScriptConfigView(EditKeyBasedConfigView):
     """Edit script config."""
 
+    allow_automate = True
+
     @override
     def _write_value(
         self,

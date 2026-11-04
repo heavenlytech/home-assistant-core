@@ -8,6 +8,7 @@ import probatio
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
+    POLICY_AUTOMATE,
     POLICY_CONFIGURE,
     POLICY_CONTROL,
     POLICY_EDIT,
@@ -26,6 +27,7 @@ SINGLE_ENTITY_SCHEMA = probatio.Any(
             probatio.Optional(POLICY_CONTROL): True,
             probatio.Optional(POLICY_EDIT): True,
             probatio.Optional(POLICY_CONFIGURE): True,
+            probatio.Optional(POLICY_AUTOMATE): True,
         }
     ),
 )
@@ -34,6 +36,7 @@ ENTITY_DOMAINS = "domains"
 ENTITY_AREAS = "area_ids"
 ENTITY_DEVICE_IDS = "device_ids"
 ENTITY_ENTITY_IDS = "entity_ids"
+ENTITY_FLOORS = "floor_ids"
 
 ENTITY_VALUES_SCHEMA = probatio.Any(True, probatio.Schema({str: SINGLE_ENTITY_SCHEMA}))
 
@@ -46,6 +49,7 @@ ENTITY_POLICY_SCHEMA = probatio.Any(
             probatio.Optional(ENTITY_DEVICE_IDS): ENTITY_VALUES_SCHEMA,
             probatio.Optional(ENTITY_DOMAINS): ENTITY_VALUES_SCHEMA,
             probatio.Optional(ENTITY_ENTITY_IDS): ENTITY_VALUES_SCHEMA,
+            probatio.Optional(ENTITY_FLOORS): ENTITY_VALUES_SCHEMA,
         }
     ),
 )
@@ -97,6 +101,18 @@ def device_area_ids(
         return set()
     area_id = dr.async_get_effective_area_id(device_registry.hass, device)
     return {area_id} if area_id is not None else set()
+
+
+def area_floor_id(
+    perm_lookup: PermissionLookup | None, area_id: str
+) -> str | None:
+    """Return the floor holding an area, if any registries resolve it."""
+    if perm_lookup is None or perm_lookup.area_registry is None:
+        return None
+    area = perm_lookup.area_registry.async_get_area(area_id)
+    if area is None:
+        return None
+    return area.floor_id
 
 
 def _lookup_device(

@@ -2,6 +2,10 @@
 
 from typing import Any
 
+from homeassistant.auth.permissions.automation_targets import (
+    check_automation_targets,
+    extract_automation_targets,
+)
 from homeassistant.components import websocket_api
 from homeassistant.const import CONF_MODE, STATE_ON
 from homeassistant.core import HomeAssistant, callback
@@ -190,7 +194,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 @websocket_api.websocket_command({"type": "script/config", "entity_id": str})
-@websocket_api.require_admin
 def websocket_config(
     hass: HomeAssistant,
     connection: websocket_api.ActiveConnection,
@@ -206,6 +209,19 @@ def websocket_config(
             msg["id"], websocket_api.ERR_NOT_FOUND, "Entity not found"
         )
         return
+
+    user = connection.user
+    if not user.is_admin:
+        devices, entities, areas, floors = extract_automation_targets(
+            script.raw_config
+        )
+        if not check_automation_targets(
+            user.permissions, devices, entities, areas, floors
+        ):
+            connection.send_error(
+                msg["id"], websocket_api.ERR_NOT_FOUND, "Entity not found"
+            )
+            return
 
     connection.send_result(
         msg["id"],

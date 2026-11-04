@@ -5,9 +5,11 @@ from typing import Any
 import probatio
 
 from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.auth.permissions.upward import upward_area_ids
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar, label_registry as lr
+from homeassistant.helpers.json import json_fragment
 
 
 @callback
@@ -34,18 +36,33 @@ def websocket_list_areas(
     registry = ar.async_get(hass)
     user = connection.user
     if user.is_admin:
-        areas = registry.async_list_areas()
+        payload: list[json_fragment | dict] = [
+            entry.json_fragment for entry in registry.async_list_areas()
+        ]
     else:
         check_area = user.permissions.check_area
-        areas = [
-            entry
-            for entry in registry.async_list_areas()
-            if check_area(entry.id, POLICY_READ)
-        ]
-    connection.send_result(
-        msg["id"],
-        [entry.json_fragment for entry in areas],
-    )
+        upward = upward_area_ids(hass, user)
+        payload = []
+        for entry in registry.async_list_areas():
+            if check_area(entry.id, POLICY_READ):
+                payload.append(entry.json_fragment)
+            elif entry.id in upward:
+                payload.append(
+                    {
+                        "aliases": [],
+                        "area_id": entry.id,
+                        "floor_id": entry.floor_id,
+                        "humidity_entity_id": None,
+                        "icon": None,
+                        "labels": [],
+                        "name": entry.name,
+                        "picture": None,
+                        "temperature_entity_id": None,
+                        "created_at": entry.created_at.timestamp(),
+                        "modified_at": entry.modified_at.timestamp(),
+                    }
+                )
+    connection.send_result(msg["id"], payload)
 
 
 @websocket_api.websocket_command(

@@ -74,6 +74,7 @@ _TARGET_PERMISSION_CHECKS = {
     "device": "check_device",
     "area": "check_area",
     "domain": "check_domain",
+    "floor": "check_floor",
 }
 
 

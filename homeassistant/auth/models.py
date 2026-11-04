@@ -94,13 +94,27 @@ class User:
             return perm_mdl.OwnerPermissions
         user_policy = self.policy
         if (
-            user_policy is not None
+            not self.is_admin
             and getattr(self.perm_lookup, "access_mode", None)
             == ACCESS_MODE_OPEN_UNLESS_SPECIFIED
-            and policy_has_grants(user_policy)
         ):
-            # Users holding direct rules are limited to those rules alone.
-            policies = [user_policy]
+            explicit = []
+            if user_policy is not None and policy_has_grants(user_policy):
+                explicit.append(user_policy)
+            explicit.extend(
+                group.policy
+                for group in self.groups
+                if not group.system_generated
+                and policy_has_grants(group.policy)
+            )
+            if explicit:
+                # Users holding direct or custom group rules are limited
+                # to those rules alone, without the open Users group.
+                policies = explicit
+            else:
+                policies = [group.policy for group in self.groups]
+                if user_policy is not None:
+                    policies.append(user_policy)
         else:
             policies = [group.policy for group in self.groups]
             if user_policy is not None:

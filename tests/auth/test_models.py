@@ -48,7 +48,9 @@ def test_permissions_include_user_policy() -> None:
 
 def test_permissions_open_unless_specified() -> None:
     """Test direct rules replace group grants in open-unless-specified mode."""
-    group = models.Group(name="Test Group", policy={"entities": True})
+    group = models.Group(
+        name="Test Group", policy={"entities": True}, system_generated=True
+    )
     lookup = permissions.PermissionLookup(None, None, "open_unless_specified")
 
     plain = models.User(name="Plain User", perm_lookup=lookup, groups=[group])
@@ -63,7 +65,9 @@ def test_permissions_open_unless_specified() -> None:
 
 def test_permissions_open_unless_specified_empty_policy_stays_open() -> None:
     """Test an empty direct policy keeps group grants in that mode."""
-    group = models.Group(name="Test Group", policy={"entities": True})
+    group = models.Group(
+        name="Test Group", policy={"entities": True}, system_generated=True
+    )
     lookup = permissions.PermissionLookup(None, None, "open_unless_specified")
 
     user = models.User(name="Test User", perm_lookup=lookup, groups=[group])

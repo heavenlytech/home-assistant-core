@@ -14,6 +14,7 @@ import probatio
 from propcache.api import cached_property
 from yarl import URL
 
+from homeassistant.auth.permissions.dashboard import dashboard_has_readable_entity
 from homeassistant.components import onboarding, websocket_api
 from homeassistant.components.http import KEY_HASS, HomeAssistantView, StaticPathConfig
 from homeassistant.components.websocket_api import ERR_NOT_FOUND, ActiveConnection
@@ -752,15 +753,24 @@ async def websocket_get_icons(
     )
 
 
-@callback
 @websocket_api.websocket_command({"type": "get_panels"})
-def websocket_get_panels(
+@websocket_api.async_response
+async def websocket_get_panels(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
     """Handle get panels command."""
-    user_is_admin = connection.user.is_admin
+    user = connection.user
+    user_is_admin = user.is_admin
     panels_config = hass.data[DATA_PANELS_CONFIG]
     panels: dict[str, PanelResponse] = {}
+    dashboards = None
+    try:
+        from homeassistant.components.lovelace.const import LOVELACE_DATA  # noqa: PLC0415
+
+        lovelace_data = hass.data.get(LOVELACE_DATA)
+        dashboards = lovelace_data.dashboards if lovelace_data else None
+    except ImportError:
+        dashboards = None
     for panel_key, panel in connection.hass.data[DATA_PANELS].items():
         config_override = panels_config.get(panel_key)
         require_admin = (
@@ -770,6 +780,14 @@ def websocket_get_panels(
         )
         if not user_is_admin and require_admin:
             continue
+        if (
+            not user_is_admin
+            and dashboards is not None
+            and panel.component_name == "lovelace"
+            and (dashboard := dashboards.get(panel_key)) is not None
+        ):
+            if not await dashboard_has_readable_entity(dashboard, user):
+                continue
         panels[panel_key] = panel.to_response(config_override)
 
     connection.send_message(websocket_api.result_message(msg["id"], panels))

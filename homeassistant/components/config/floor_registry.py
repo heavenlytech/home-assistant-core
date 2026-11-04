@@ -5,6 +5,7 @@ from typing import Any
 import probatio
 
 from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.auth.permissions.upward import visible_area_ids
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
@@ -36,21 +37,46 @@ def websocket_list_floors(
     registry = fr.async_get(hass)
     user = connection.user
     floors = registry.async_list_floors()
-    if not user.is_admin:
-        # A floor is visible when it holds at least one readable area.
+    if user.is_admin:
+        payload = [_entry_dict(entry) for entry in floors]
+    else:
+        # A floor is visible when it holds at least one readable or
+        # upward-visible area, or when a direct floor grant reads it.
+        # Floors without an explicitly readable area or floor grant
+        # carry redacted fields.
         check_area = user.permissions.check_area
-        readable_floors = {
+        check_floor = user.permissions.check_floor
+        visible = visible_area_ids(hass, user)
+        explicit_floors = {
             area.floor_id
             for area in ar.async_get(hass).async_list_areas()
             if area.floor_id is not None and check_area(area.id, POLICY_READ)
         }
-        floors = [
-            entry for entry in floors if entry.floor_id in readable_floors
-        ]
-    connection.send_result(
-        msg["id"],
-        [_entry_dict(entry) for entry in floors],
-    )
+        visible_floors = {
+            area.floor_id
+            for area in ar.async_get(hass).async_list_areas()
+            if area.floor_id is not None and area.id in visible
+        }
+        payload = []
+        for entry in floors:
+            direct_grant = check_floor(entry.floor_id, POLICY_READ)
+            if entry.floor_id not in visible_floors and not direct_grant:
+                continue
+            if entry.floor_id in explicit_floors or direct_grant:
+                payload.append(_entry_dict(entry))
+            else:
+                payload.append(
+                    {
+                        "aliases": [],
+                        "created_at": entry.created_at.timestamp(),
+                        "floor_id": entry.floor_id,
+                        "icon": None,
+                        "level": entry.level,
+                        "name": entry.name,
+                        "modified_at": entry.modified_at.timestamp(),
+                    }
+                )
+    connection.send_result(msg["id"], payload)
 
 
 @websocket_api.websocket_command(
@@ -120,7 +146,7 @@ def websocket_delete_floor(
         probatio.Optional("name"): str,
     }
 )
-@websocket_api.require_admin
+@websocket_api.require_configure_permission("floor", "floor_id")
 @callback
 def websocket_update_floor(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]

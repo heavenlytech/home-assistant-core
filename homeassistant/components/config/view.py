@@ -9,10 +9,15 @@ from typing import Any, cast, override
 from aiohttp import web
 import probatio
 
-from homeassistant.components.http import KEY_HASS, HomeAssistantView, require_admin
+from homeassistant.auth.models import User
+from homeassistant.auth.permissions.automation_targets import (
+    check_automation_targets,
+    extract_automation_targets,
+)
+from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.const import CONF_ID
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.util.file import write_utf8_file_atomic
 from homeassistant.util.yaml import dump, load_yaml
 from homeassistant.util.yaml.loader import JSON_TYPE
@@ -24,6 +29,8 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
     HomeAssistantView
 ):
     """Configure a Group endpoint."""
+
+    allow_automate = False
 
     def __init__(
         self,
@@ -82,20 +89,53 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
         """Delete value."""
         raise NotImplementedError
 
-    @require_admin
+    def _allowed(
+        self,
+        user: User,
+        old_value: dict[str, Any] | None,
+        new_data: dict[str, Any] | None,
+    ) -> bool:
+        """Return True when the user may read or write one entry.
+
+        Administrators always pass. Other users pass only on automation-like
+        views when their automate right covers every device, entity, and area
+        named by both the stored entry and the submitted data.
+        """
+        if user.is_admin:
+            return True
+        if not self.allow_automate:
+            return False
+        devices: set[str] = set()
+        entities: set[str] = set()
+        areas: set[str] = set()
+        floors: set[str] = set()
+        for config in (old_value, new_data):
+            if config is not None:
+                found = extract_automation_targets(config)
+                devices.update(found[0])
+                entities.update(found[1])
+                areas.update(found[2])
+                floors.update(found[3])
+        return check_automation_targets(
+            user.permissions, devices, entities, areas, floors
+        )
+
     async def get(self, request: web.Request, config_key: str) -> web.Response:
         """Fetch device specific config."""
         hass = request.app[KEY_HASS]
+        user: User = request["hass_user"]
         async with self.mutation_lock:
             current = await self.read_config(hass)
             value = self._get_value(hass, current, config_key)
-
-        if value is None:
-            return self.json_message("Resource not found", HTTPStatus.NOT_FOUND)
+            if value is None:
+                return self.json_message(
+                    "Resource not found", HTTPStatus.NOT_FOUND
+                )
+            if not self._allowed(user, value, None):
+                raise Unauthorized
 
         return self.json(value)
 
-    @require_admin
     async def post(self, request: web.Request, config_key: str) -> web.Response:
         """Validate config and return results."""
         try:
@@ -109,6 +149,12 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
             return self.json_message(f"Key malformed: {err}", HTTPStatus.BAD_REQUEST)
 
         hass = request.app[KEY_HASS]
+        user: User = request["hass_user"]
+
+        current = await self.read_config(hass)
+        old_value = self._get_value(hass, current, config_key)
+        if not self._allowed(user, old_value, data):
+            raise Unauthorized
 
         try:
             # We just validate, we don't store that data because
@@ -127,6 +173,9 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
 
         async with self.mutation_lock:
             current = await self.read_config(hass)
+            old_value = self._get_value(hass, current, config_key)
+            if not self._allowed(user, old_value, data):
+                raise Unauthorized
             self._write_value(hass, current, config_key, data)
 
             await hass.async_add_executor_job(_write, path, current)
@@ -138,10 +187,10 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
 
         return self.json({"result": "ok"})
 
-    @require_admin
     async def delete(self, request: web.Request, config_key: str) -> web.Response:
         """Remove an entry."""
         hass = request.app[KEY_HASS]
+        user: User = request["hass_user"]
         async with self.mutation_lock:
             current = await self.read_config(hass)
             value = self._get_value(hass, current, config_key)
@@ -149,6 +198,9 @@ class BaseEditConfigView[_DataT: (dict[str, dict[str, Any]], list[dict[str, Any]
 
             if value is None:
                 return self.json_message("Resource not found", HTTPStatus.BAD_REQUEST)
+
+            if not self._allowed(user, value, None):
+                raise Unauthorized
 
             self._delete_value(hass, current, config_key)
             await hass.async_add_executor_job(_write, path, current)

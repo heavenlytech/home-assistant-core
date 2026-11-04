@@ -687,3 +687,115 @@ async def test_defaults_get_and_update(
     assert result["success"], result
     assert result["result"] == {"mode": "least_privileged"}
     assert await hass.auth.async_get_access_mode() == "least_privileged"
+
+
+async def test_group_list_requires_admin(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Test listing groups requires an administrator."""
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json({"id": 5, "type": "config/auth/group/list"})
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "unauthorized"
+
+
+async def test_group_create_list_update_delete(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test creating, listing, updating, and deleting a custom group."""
+    client = await hass_ws_client(hass)
+    policy = {"entities": {"device_ids": {"device-1": {"read": True}}}}
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/group/create", "name": "Family", "policy": policy}
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    group_id = result["result"]["group"]["id"]
+    assert result["result"]["group"]["name"] == "Family"
+    assert result["result"]["group"]["policy"] == policy
+    assert result["result"]["group"]["system_generated"] is False
+
+    user = await hass.auth.async_create_user("Member", group_ids=[group_id])
+    assert user.permissions.check_device("device-1", "read") is True
+
+    await client.send_json({"id": 6, "type": "config/auth/group/list"})
+    result = await client.receive_json()
+    assert result["success"], result
+    listed = next(g for g in result["result"] if g["id"] == group_id)
+    assert listed["member_ids"] == [user.id]
+
+    await client.send_json(
+        {
+            "id": 7,
+            "type": "config/auth/group/update",
+            "group_id": group_id,
+            "name": "Relatives",
+            "policy": {"entities": {"device_ids": {"device-2": {"read": True}}}},
+        }
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"]["group"]["name"] == "Relatives"
+    assert user.permissions.check_device("device-1", "read") is False
+    assert user.permissions.check_device("device-2", "read") is True
+
+    await client.send_json(
+        {"id": 8, "type": "config/auth/group/delete", "group_id": group_id}
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert await hass.auth.async_get_group(group_id) is None
+    assert user.groups == []
+
+
+async def test_group_system_protected(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test system groups cannot be updated or deleted."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/group/update",
+            "group_id": "system-admin",
+            "name": "Changed",
+        }
+    )
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "cannot_modify_system_group"
+
+    await client.send_json(
+        {"id": 6, "type": "config/auth/group/delete", "group_id": "system-users"}
+    )
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "cannot_modify_system_group"
+
+
+async def test_group_unknown(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test updating or deleting an unknown group fails."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/group/update", "group_id": "nope"}
+    )
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "not_found"
+
+    await client.send_json(
+        {"id": 6, "type": "config/auth/group/delete", "group_id": "nope"}
+    )
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "not_found"

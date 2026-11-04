@@ -1,0 +1,47 @@
+# Development image for the granular-permissions work.
+#
+# The core checkout and the demonstration configuration are mounted at run
+# time, so source edits apply on container restart with no rebuild:
+#
+#   docker build -f core/Dockerfile.demo -t hass-granular:dev core/
+#   docker run -d --name hass-granular-dev --restart unless-stopped \
+#     -p 8123:8123 \
+#     -v <workspace>/core:/workspaces/core \
+#     -v <workspace>/demo-config:/config \
+#     -e HOME=/config \
+#     --user "$(id -u):$(id -g)" \
+#     hass-granular:dev
+#
+# The interface development server still runs on the host (frontend
+# checkout, `pnpm dev`) and forwards data calls to this container, so
+# interface edits also apply without a rebuild.
+
+FROM python:3.14-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# A compiler is required: two voice enhancement packages build from source,
+# and the frontend asks for service descriptions on every boot, which walks
+# an import chain reaching those packages. Without them the screens hang.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        g++ \
+        python3-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspaces/core
+
+COPY requirements.txt ./
+COPY homeassistant/package_constraints.txt ./homeassistant/
+
+# The packaged interface is installed up front so the frontend integration
+# (and lovelace, which hangs off it) can start without a runtime download.
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt \
+    && pip install "home-assistant-frontend==20261028.4"
+
+EXPOSE 8123
+
+CMD ["python", "-m", "homeassistant", "-c", "/config"]

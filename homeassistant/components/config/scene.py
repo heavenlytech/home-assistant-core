@@ -55,6 +55,8 @@ def async_setup(hass: HomeAssistant) -> bool:
 class EditSceneConfigView(EditIdBasedConfigView):
     """Edit scene config."""
 
+    allow_automate = True
+
     @override
     def _write_value(
         self,

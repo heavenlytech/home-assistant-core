@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import probatio
 
+from homeassistant.auth.permissions.dashboard import dashboard_has_readable_entity
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -143,6 +144,10 @@ async def websocket_lovelace_config(
     config: LovelaceConfig,
 ) -> json_fragment:
     """Send Lovelace UI config over WebSocket connection."""
+    if not connection.user.is_admin and not await dashboard_has_readable_entity(
+        config, connection.user
+    ):
+        raise ConfigNotFound
     return await config.async_json(msg["force"])
 
 

@@ -39,6 +39,10 @@ _LOGGER = logging.getLogger(__name__)
 EVENT_USER_ADDED = "user_added"
 EVENT_USER_UPDATED = "user_updated"
 EVENT_USER_REMOVED = "user_removed"
+EVENT_GROUP_ADDED = "group_added"
+EVENT_GROUP_UPDATED = "group_updated"
+EVENT_GROUP_REMOVED = "group_removed"
+EVENT_ACCESS_MODE_UPDATED = "access_mode_updated"
 
 type _MfaModuleDict = dict[str, MultiFactorAuthModule]
 type _ProviderKey = tuple[str, str | None]
@@ -250,8 +254,45 @@ class AuthManager:
         return next((user for user in users if user.is_owner), None)
 
     async def async_get_group(self, group_id: str) -> models.Group | None:
-        """Retrieve all groups."""
+        """Retrieve a group by identifier."""
         return await self._store.async_get_group(group_id)
+
+    async def async_get_groups(self) -> list[models.Group]:
+        """Retrieve all groups."""
+        return await self._store.async_get_groups()
+
+    async def async_create_group(
+        self, name: str, policy: PolicyType | None = None
+    ) -> models.Group:
+        """Create a custom group with the same rule shape as user rules."""
+        group = await self._store.async_create_group(name, policy)
+        self.hass.bus.async_fire(EVENT_GROUP_ADDED, {"group_id": group.id})
+        return group
+
+    async def async_update_group(
+        self,
+        group: models.Group,
+        name: str | None = None,
+        policy: PolicyType | None = None,
+    ) -> None:
+        """Update the name or rules of a custom group."""
+        await self._store.async_update_group(group, name, policy)
+        self.hass.bus.async_fire(EVENT_GROUP_UPDATED, {"group_id": group.id})
+        for user in await self.async_get_users():
+            if any(member.id == group.id for member in user.groups):
+                self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user.id})
+
+    async def async_delete_group(self, group: models.Group) -> None:
+        """Delete a custom group and remove it from every member."""
+        member_ids = [
+            user.id
+            for user in await self.async_get_users()
+            if any(member.id == group.id for member in user.groups)
+        ]
+        await self._store.async_delete_group(group)
+        self.hass.bus.async_fire(EVENT_GROUP_REMOVED, {"group_id": group.id})
+        for user_id in member_ids:
+            self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user_id})
 
     async def async_get_user_by_credentials(
         self, credentials: models.Credentials
@@ -424,6 +465,7 @@ class AuthManager:
     async def async_update_access_mode(self, mode: str) -> None:
         """Set the default access mode for ordinary users."""
         await self._store.async_update_access_mode(mode)
+        self.hass.bus.async_fire(EVENT_ACCESS_MODE_UPDATED, {"mode": mode})
 
     @callback
     def async_update_user_credentials_data(

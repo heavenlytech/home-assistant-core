@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import ANY, patch
 
 import pytest
+from pytest_homeassistant.common import CLIENT_ID, MockUser
 from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components import config
@@ -267,4 +268,55 @@ async def test_api_calls_require_admin(
 
     # Delete
     resp = await client.delete("/api/config/scene/config/light_on")
+    assert resp.status == HTTPStatus.UNAUTHORIZED
+
+
+@pytest.mark.parametrize("scene_config", [{}])
+@pytest.mark.usefixtures("setup_scene")
+async def test_automate_right_allows_permitted_entities(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_config_store: dict[str, Any],
+) -> None:
+    """Test users with automate grants can save scenes naming those entities."""
+    with patch.object(config, "SECTIONS", [scene]):
+        await async_setup_component(hass, DOMAIN, {})
+
+    hass_config_store["scenes.yaml"] = [
+        {
+            "id": "light_off",
+            "name": "Lights off",
+            "entities": {"light.bedroom": {"state": "off"}},
+        }
+    ]
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"entity_ids": {"light.bedroom": {"automate": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+    client = await hass_client(access_token)
+
+    resp = await client.get("/api/config/scene/config/light_off")
+    assert resp.status == HTTPStatus.OK
+
+    resp = await client.post(
+        "/api/config/scene/config/light_off",
+        data=json.dumps(
+            {
+                "name": "Lights off",
+                "entities": {"light.bedroom": {"state": "on"}},
+            }
+        ),
+    )
+    assert resp.status == HTTPStatus.OK
+
+    resp = await client.post(
+        "/api/config/scene/config/light_off",
+        data=json.dumps(
+            {
+                "name": "Lights off",
+                "entities": {"light.kitchen": {"state": "on"}},
+            }
+        ),
+    )
     assert resp.status == HTTPStatus.UNAUTHORIZED

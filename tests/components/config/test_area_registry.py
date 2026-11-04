@@ -5,7 +5,12 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import ANY, CLIENT_ID, MockUser
+from pytest_homeassistant.common import (
+    ANY,
+    CLIENT_ID,
+    MockConfigEntry,
+    MockUser,
+)
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
@@ -18,7 +23,11 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar, label_registry as lr
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    label_registry as lr,
+)
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
@@ -648,3 +657,37 @@ async def test_list_areas_filtered_for_restricted_user(
 
     assert msg["success"], msg
     assert [area["area_id"] for area in msg["result"]] == [allowed.id]
+
+
+async def test_list_areas_upward_from_readable_device(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    area_registry: ar.AreaRegistry,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test areas holding readable devices appear with redacted fields."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    area = area_registry.async_create("Kitchen", icon="mdi:fridge")
+    other = area_registry.async_create("Garage")
+    entry = MockConfigEntry()
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "device-1")},
+    )
+    device_registry.async_update_device(device.id, area_id=area.id)
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"device_ids": {device.id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/area_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [item["area_id"] for item in msg["result"]] == [area.id]
+    assert msg["result"][0]["name"] == "Kitchen"
+    assert msg["result"][0]["icon"] is None
+    assert other.id not in [item["area_id"] for item in msg["result"]]

@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from pytest_homeassistant.common import CLIENT_ID, MockUser
 from pytest_homeassistant.typing import ClientSessionGenerator
 
 from homeassistant.components import config
@@ -409,4 +410,56 @@ async def test_api_calls_require_admin(
 
     # Delete
     resp = await client.delete("/api/config/automation/config/sun")
+    assert resp.status == HTTPStatus.UNAUTHORIZED
+
+
+@pytest.mark.parametrize("automation_config", [{}])
+@pytest.mark.usefixtures("setup_automation")
+async def test_automate_right_allows_permitted_devices(
+    hass: HomeAssistant,
+    hass_client: ClientSessionGenerator,
+    hass_config_store: dict[str, Any],
+) -> None:
+    """Test users with automate grants can edit automations naming those devices."""
+    with patch.object(config, "SECTIONS", [automation]):
+        await async_setup_component(hass, DOMAIN, {})
+
+    hass_config_store["automations.yaml"] = [
+        {"id": "moon", "trigger": [{"platform": "device", "device_id": "device-1"}]}
+    ]
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"device_ids": {"device-1": {"automate": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+    client = await hass_client(access_token)
+
+    resp = await client.get("/api/config/automation/config/moon")
+    assert resp.status == HTTPStatus.OK
+
+    # Permitted device passes permission but fails validation (400),
+    # proving the automate check allowed it through.
+    resp = await client.post(
+        "/api/config/automation/config/moon",
+        data=json.dumps(
+            {
+                "trigger": [{"platform": "device", "device_id": "device-1"}],
+                "action": [],
+                "condition": [],
+            }
+        ),
+    )
+    assert resp.status == HTTPStatus.BAD_REQUEST
+
+    # Unpermitted device is blocked by permission (401) before validation.
+    resp = await client.post(
+        "/api/config/automation/config/moon",
+        data=json.dumps(
+            {
+                "trigger": [{"platform": "device", "device_id": "device-2"}],
+                "action": [],
+                "condition": [],
+            }
+        ),
+    )
     assert resp.status == HTTPStatus.UNAUTHORIZED

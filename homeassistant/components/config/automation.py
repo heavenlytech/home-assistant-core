@@ -53,6 +53,8 @@ def async_setup(hass: HomeAssistant) -> bool:
 class EditAutomationConfigView(EditIdBasedConfigView):
     """Edit automation config."""
 
+    allow_automate = True
+
     @override
     def _write_value(
         self,

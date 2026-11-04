@@ -9,7 +9,11 @@ from typing import Any
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -74,8 +78,53 @@ class AuthStore:
         return list(self._groups.values())
 
     async def async_get_group(self, group_id: str) -> models.Group | None:
-        """Retrieve all users."""
+        """Retrieve a group by id."""
         return self._groups.get(group_id)
+
+    async def async_create_group(
+        self, name: str, policy: PolicyType | None = None
+    ) -> models.Group:
+        """Create a custom group with the same rule shape as user rules."""
+        if not name or not name.strip():
+            raise ValueError("Group name must not be empty")
+        group = models.Group(name=name.strip(), policy=policy or {})
+        while group.id in self._groups:
+            group = models.Group(name=name.strip(), policy=policy or {})
+        self._groups[group.id] = group
+        self._async_schedule_save()
+        return group
+
+    async def async_update_group(
+        self,
+        group: models.Group,
+        name: str | None = None,
+        policy: PolicyType | None = None,
+    ) -> None:
+        """Update the name or rules of a custom group."""
+        if group.system_generated:
+            raise ValueError("System groups cannot be modified")
+        if name is not None:
+            if not name.strip():
+                raise ValueError("Group name must not be empty")
+            group.name = name.strip()
+        if policy is not None:
+            group.policy = policy
+        for user in self._users.values():
+            if any(member.id == group.id for member in user.groups):
+                user.invalidate_cache()
+        self._async_schedule_save()
+
+    async def async_delete_group(self, group: models.Group) -> None:
+        """Delete a custom group and remove it from every member."""
+        if group.system_generated:
+            raise ValueError("System groups cannot be deleted")
+        self._groups.pop(group.id, None)
+        for user in self._users.values():
+            if any(member.id == group.id for member in user.groups):
+                user.groups = [
+                    member for member in user.groups if member.id != group.id
+                ]
+        self._async_schedule_save()
 
     async def async_get_access_mode(self) -> str:
         """Return the default access mode for ordinary users."""
@@ -395,17 +444,13 @@ class AuthStore:
 
         dev_reg = dr.async_get(self.hass)
         ent_reg = er.async_get(self.hass)
+        area_reg = ar.async_get(self.hass)
         data = await self._store.async_load()
 
-        stored_mode = system_policies.ACCESS_MODE_OPEN
-        if isinstance(data, dict):
-            stored_mode = data.get("defaults", {}).get("mode", stored_mode)
-            if stored_mode not in system_policies.ACCESS_MODES:
-                stored_mode = system_policies.ACCESS_MODE_OPEN
-        self._access_mode = stored_mode
-
-        perm_lookup = PermissionLookup(ent_reg, dev_reg, stored_mode)
-        self._perm_lookup = perm_lookup
+        self._access_mode = _stored_access_mode(data)
+        self._perm_lookup = PermissionLookup(
+            ent_reg, dev_reg, self._access_mode, area_reg
+        )
 
         if data is None or not isinstance(data, dict):
             self._set_defaults()
@@ -518,7 +563,7 @@ class AuthStore:
                 is_owner=user_dict["is_owner"],
                 is_active=user_dict["is_active"],
                 system_generated=user_dict["system_generated"],
-                perm_lookup=perm_lookup,
+                perm_lookup=self._perm_lookup,
                 # New in 2021.11
                 local_only=user_dict.get("local_only", False),
                 policy=user_dict.get("policy"),
@@ -689,6 +734,8 @@ class AuthStore:
 
     def _set_defaults(self) -> None:
         """Set default values for auth store."""
+        if self._perm_lookup is None:
+            self._perm_lookup = PermissionLookup(None, None, self._access_mode)  # type: ignore[arg-type]
         self._users = {}
 
         groups: dict[str, models.Group] = {}
@@ -702,6 +749,16 @@ class AuthStore:
         groups[read_only_group.id] = read_only_group
         self._groups = groups
         self._build_token_id_to_user_id()
+
+
+def _stored_access_mode(data: dict | None) -> str:
+    """Return the stored default access mode, falling back to open."""
+    if not isinstance(data, dict):
+        return system_policies.ACCESS_MODE_OPEN
+    mode = data.get("defaults", {}).get("mode", system_policies.ACCESS_MODE_OPEN)
+    if mode not in system_policies.ACCESS_MODES:
+        return system_policies.ACCESS_MODE_OPEN
+    return mode
 
 
 def _system_admin_group() -> models.Group:

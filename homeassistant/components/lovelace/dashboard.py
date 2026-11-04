@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, override
 
 import probatio
 
+from homeassistant.auth.permissions.dashboard import dashboard_has_readable_entity
 from homeassistant.components import websocket_api
 from homeassistant.components.frontend import async_panel_exists
 from homeassistant.const import CONF_FILENAME, CONF_ICON, EVENT_LOVELACE_UPDATED
@@ -323,20 +324,23 @@ class DashboardsCollection(collection.DictStorageCollection):
 class DashboardsCollectionWebSocket(collection.DictStorageCollectionWebsocket):
     """Class to expose storage collection management over websocket."""
 
-    @callback
+    @staticmethod
+    @websocket_api.async_response
     @override
-    def ws_list_item(
-        self,
+    async def ws_list_item(
         hass: HomeAssistant,
         connection: websocket_api.ActiveConnection,
         msg: dict[str, Any],
     ) -> None:
-        """Send Lovelace UI resources over WebSocket connection."""
-        connection.send_result(
-            msg["id"],
-            [
-                dashboard.config
-                for dashboard in hass.data[LOVELACE_DATA].dashboards.values()
-                if dashboard.config
-            ],
-        )
+        """Send Lovelace dashboards, hiding those without readable entities."""
+        user = connection.user
+        items = []
+        for dashboard in hass.data[LOVELACE_DATA].dashboards.values():
+            if not dashboard.config:
+                continue
+            if not user.is_admin and not await dashboard_has_readable_entity(
+                dashboard, user
+            ):
+                continue
+            items.append(dashboard.config)
+        connection.send_result(msg["id"], items)

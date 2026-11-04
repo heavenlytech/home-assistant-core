@@ -1,4 +1,4 @@
-"""Tests for the shared device, area, and domain permission resolver."""
+"""Tests for the shared device, area, domain, and floor permission resolver."""
 
 import pytest
 from pytest_homeassistant.common import (
@@ -21,11 +21,17 @@ from homeassistant.auth.permissions.const import (
 )
 from homeassistant.auth.permissions.models import PermissionLookup
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar, floor_registry as fr
 
 
 @pytest.mark.parametrize(
     ("target_type", "subcategory"),
-    [("device", "device_ids"), ("area", "area_ids"), ("domain", "domains")],
+    [
+        ("device", "device_ids"),
+        ("area", "area_ids"),
+        ("domain", "domains"),
+        ("floor", "floor_ids"),
+    ],
 )
 def test_resolve_target_direct_rule(target_type: str, subcategory: str) -> None:
     """Test the direct rule of every target type grants each right separately."""
@@ -62,7 +68,7 @@ def test_resolve_target_direct_rule(target_type: str, subcategory: str) -> None:
     )
 
 
-@pytest.mark.parametrize("target_type", ["device", "area", "domain"])
+@pytest.mark.parametrize("target_type", ["device", "area", "domain", "floor"])
 def test_resolve_target_missing_right_falls_through_to_all(target_type: str) -> None:
     """Test a rule without an opinion falls through to the all rule."""
     policy = POLICY_SCHEMA(
@@ -89,6 +95,9 @@ def test_resolve_target_true_category_allows_all() -> None:
     assert (
         resolve_target_permission(policy, "domain", "light", POLICY_CONFIGURE) is True
     )
+    assert (
+        resolve_target_permission(policy, "floor", "floor-1", POLICY_READ) is True
+    )
 
 
 def test_resolve_target_empty_policy_denies() -> None:
@@ -103,16 +112,20 @@ def test_resolve_target_empty_policy_denies() -> None:
     assert (
         resolve_target_permission(policy, "domain", "light", POLICY_EDIT) is False
     )
+    assert (
+        resolve_target_permission(policy, "floor", "floor-1", POLICY_READ) is False
+    )
 
 
 def test_policy_permissions_target_checks_share_one_resolver() -> None:
-    """Test device, area, and domain checks resolve through one shared path."""
+    """Test device, area, domain, and floor checks share one resolver path."""
     policy = POLICY_SCHEMA(
         {
             "entities": {
                 "device_ids": {"device-1": {"read": True}},
                 "area_ids": {"area-1": {"control": True}},
                 "domains": {"light": {"configure": True}},
+                "floor_ids": {"floor-1": {"edit": True}},
             }
         }
     )
@@ -123,6 +136,8 @@ def test_policy_permissions_target_checks_share_one_resolver() -> None:
     assert permissions.check_area("area-1", POLICY_READ) is False
     assert permissions.check_domain("light", POLICY_CONFIGURE) is True
     assert permissions.check_domain("switch", POLICY_CONFIGURE) is False
+    assert permissions.check_floor("floor-1", POLICY_EDIT) is True
+    assert permissions.check_floor("floor-1", POLICY_READ) is False
 
 
 def test_owner_target_checks_allow_all() -> None:
@@ -130,6 +145,7 @@ def test_owner_target_checks_allow_all() -> None:
     assert OwnerPermissions.check_device("device-1", POLICY_READ) is True
     assert OwnerPermissions.check_area("area-1", POLICY_EDIT) is True
     assert OwnerPermissions.check_domain("light", POLICY_CONFIGURE) is True
+    assert OwnerPermissions.check_floor("floor-1", POLICY_READ) is True
 
 
 def test_check_device_inherits_area_rules(hass: HomeAssistant) -> None:
@@ -181,3 +197,70 @@ def test_check_device_direct_rule_beats_area_rule(hass: HomeAssistant) -> None:
     permissions = PolicyPermissions(policy, lookup)
     assert permissions.check_device(device.id, POLICY_READ) is True
     assert permissions.check_device(device.id, POLICY_CONTROL) is True
+
+
+def test_check_area_inherits_floor_rules(hass: HomeAssistant) -> None:
+    """Test a floor grant covers the areas held on that floor."""
+    entity_registry = mock_registry(hass)
+    device_registry = mock_device_registry(hass)
+    area_registry = ar.async_get(hass)
+    floor = fr.async_get(hass).async_create("Upstairs")
+    area = area_registry.async_create("Kitchen", floor_id=floor.floor_id)
+    other = area_registry.async_create("Garage")
+    lookup = PermissionLookup(entity_registry, device_registry, "open", area_registry)
+
+    policy = POLICY_SCHEMA(
+        {"entities": {"floor_ids": {floor.floor_id: {"read": True}}}}
+    )
+    permissions = PolicyPermissions(policy, lookup)
+    assert permissions.check_floor(floor.floor_id, POLICY_READ) is True
+    assert permissions.check_area(area.id, POLICY_READ) is True
+    assert permissions.check_area(area.id, POLICY_CONTROL) is False
+    assert permissions.check_area(other.id, POLICY_READ) is False
+    assert permissions.check_area("unknown-area", POLICY_READ) is False
+
+
+def test_check_device_inherits_floor_rules(hass: HomeAssistant) -> None:
+    """Test a floor grant covers devices held in areas on that floor."""
+    entity_registry = mock_registry(hass)
+    device_registry = mock_device_registry(hass)
+    area_registry = ar.async_get(hass)
+    floor = fr.async_get(hass).async_create("Upstairs")
+    area = area_registry.async_create("Kitchen", floor_id=floor.floor_id)
+    entry = MockConfigEntry()
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "device-1")},
+    )
+    device_registry.async_update_device(device.id, area_id=area.id)
+    lookup = PermissionLookup(entity_registry, device_registry, "open", area_registry)
+
+    policy = POLICY_SCHEMA(
+        {"entities": {"floor_ids": {floor.floor_id: {"read": True}}}}
+    )
+    permissions = PolicyPermissions(policy, lookup)
+    assert permissions.check_device(device.id, POLICY_READ) is True
+    assert permissions.check_device(device.id, POLICY_CONTROL) is False
+
+
+def test_check_area_direct_rule_beats_floor_rule(hass: HomeAssistant) -> None:
+    """Test a direct area rule wins over the floor fallback."""
+    entity_registry = mock_registry(hass)
+    device_registry = mock_device_registry(hass)
+    area_registry = ar.async_get(hass)
+    floor = fr.async_get(hass).async_create("Upstairs")
+    area = area_registry.async_create("Kitchen", floor_id=floor.floor_id)
+    lookup = PermissionLookup(entity_registry, device_registry, "open", area_registry)
+
+    policy = POLICY_SCHEMA(
+        {
+            "entities": {
+                "area_ids": {area.id: {"read": True, "control": True}},
+                "floor_ids": {floor.floor_id: {"read": True}},
+            }
+        }
+    )
+    permissions = PolicyPermissions(policy, lookup)
+    assert permissions.check_area(area.id, POLICY_READ) is True
+    assert permissions.check_area(area.id, POLICY_CONTROL) is True

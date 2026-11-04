@@ -5,13 +5,17 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import CLIENT_ID, MockUser
+from pytest_homeassistant.common import CLIENT_ID, MockConfigEntry, MockUser
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
 from homeassistant.components.config import DOMAIN, floor_registry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar, floor_registry as fr
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    floor_registry as fr,
+)
 from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
@@ -479,3 +483,117 @@ async def test_list_floors_filtered_for_restricted_user(
 
     assert msg["success"], msg
     assert [floor["floor_id"] for floor in msg["result"]] == [shown.floor_id]
+
+
+async def test_list_floors_upward_from_readable_device(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    floor_registry: fr.FloorRegistry,
+    area_registry: ar.AreaRegistry,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test floors holding upward-visible areas appear with redacted fields."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    shown = floor_registry.async_create("First floor", icon="mdi:home")
+    floor_registry.async_create("Second floor")
+    area = area_registry.async_create("Kitchen", floor_id=shown.floor_id)
+    entry = MockConfigEntry()
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "device-1")},
+    )
+    device_registry.async_update_device(device.id, area_id=area.id)
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"device_ids": {device.id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/floor_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [floor["floor_id"] for floor in msg["result"]] == [shown.floor_id]
+    assert msg["result"][0]["name"] == "First floor"
+    assert msg["result"][0]["icon"] is None
+
+
+async def test_list_floors_direct_grant_shows_empty_floor_fully(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    floor_registry: fr.FloorRegistry,
+) -> None:
+    """Test a direct floor grant lists an empty floor with full fields."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    granted = floor_registry.async_create("Upstairs", icon="mdi:home")
+    floor_registry.async_create("Downstairs")
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"floor_ids": {granted.floor_id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/floor_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [floor["floor_id"] for floor in msg["result"]] == [granted.floor_id]
+    assert msg["result"][0]["icon"] == "mdi:home"
+
+
+async def test_update_floor_configure_right(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    floor_registry: fr.FloorRegistry,
+) -> None:
+    """Test the configure right allows floor edits without administrator."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    floor = floor_registry.async_create("Upstairs")
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {
+        "entities": {"floor_ids": {floor.floor_id: {"configure": True}}}
+    }
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/floor_registry/update",
+            "floor_id": floor.floor_id,
+            "name": "Top floor",
+        }
+    )
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    assert msg["result"]["name"] == "Top floor"
+
+
+async def test_update_floor_without_configure_denied(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    floor_registry: fr.FloorRegistry,
+) -> None:
+    """Test floor edits without the configure right stay blocked."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    floor = floor_registry.async_create("Upstairs")
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"floor_ids": {floor.floor_id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/floor_registry/update",
+            "floor_id": floor.floor_id,
+            "name": "Top floor",
+        }
+    )
+    msg = await client.receive_json()
+    assert not msg["success"], msg

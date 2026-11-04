@@ -5,7 +5,11 @@ from typing import TYPE_CHECKING
 import attr
 
 if TYPE_CHECKING:
-    from homeassistant.helpers import device_registry as dr, entity_registry as er
+    from homeassistant.helpers import (
+        area_registry as ar,
+        device_registry as dr,
+        entity_registry as er,
+    )
 
 
 @attr.s(slots=True)
@@ -15,3 +19,4 @@ class PermissionLookup:
     entity_registry: er.EntityRegistry = attr.ib()
     device_registry: dr.DeviceRegistry = attr.ib()
     access_mode: str = attr.ib(default="open")
+    area_registry: ar.AreaRegistry | None = attr.ib(default=None)

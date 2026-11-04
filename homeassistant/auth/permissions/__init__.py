@@ -10,7 +10,9 @@ from .entities import (
     ENTITY_AREAS,
     ENTITY_DEVICE_IDS,
     ENTITY_DOMAINS,
+    ENTITY_FLOORS,
     ENTITY_POLICY_SCHEMA,
+    area_floor_id,
     compile_entities,
     device_area_ids,
 )
@@ -27,11 +29,13 @@ POLICY_SCHEMA = probatio.Schema({probatio.Optional(CAT_ENTITIES): ENTITY_POLICY_
 TARGET_DEVICE = "device"
 TARGET_AREA = "area"
 TARGET_DOMAIN = "domain"
+TARGET_FLOOR = "floor"
 
 _TARGET_SUBCATEGORY = {
     TARGET_DEVICE: ENTITY_DEVICE_IDS,
     TARGET_AREA: ENTITY_AREAS,
     TARGET_DOMAIN: ENTITY_DOMAINS,
+    TARGET_FLOOR: ENTITY_FLOORS,
 }
 
 __all__ = [
@@ -39,6 +43,7 @@ __all__ = [
     "TARGET_AREA",
     "TARGET_DEVICE",
     "TARGET_DOMAIN",
+    "TARGET_FLOOR",
     "AbstractPermissions",
     "OwnerPermissions",
     "PermissionLookup",
@@ -83,12 +88,13 @@ def resolve_target_permission(
     key: str,
     perm_lookup: PermissionLookup | None = None,
 ) -> bool:
-    """Resolve permission for one device, area, or domain target.
+    """Resolve permission for one device, area, domain, or floor target.
 
     This is the single shared resolver reused by every non-entity target:
     the direct rule for the target wins, then the areas holding a device,
-    and the all rule is the fallback. An explicit denial stops the lookup;
-    a missing rule falls through.
+    then the floors holding those areas, and the all rule is the fallback.
+    An explicit denial stops the lookup; a missing rule falls through.
+    Only positive parent grants propagate downward.
     """
     category = policy.get(CAT_ENTITIES)
     if category is True:
@@ -105,11 +111,48 @@ def resolve_target_permission(
         area_rules = category.get(ENTITY_AREAS)
         if area_rules is True:
             return True
+        holding_areas: set[str] = set()
         if isinstance(area_rules, dict):
-            for area_id in device_area_ids(perm_lookup, target_id):
+            holding_areas = device_area_ids(perm_lookup, target_id)
+            for area_id in holding_areas:
                 if _test_rule(area_rules.get(area_id), key) is True:
                     return True
+        if _floor_rules_grant(
+            category, key, perm_lookup, target_id, holding_areas or None
+        ):
+            return True
+    if target_type == TARGET_AREA:
+        if _floor_rules_grant(category, key, perm_lookup, None, {target_id}):
+            return True
     return _test_rule(category.get(SUBCAT_ALL), key) is True
+
+
+def _floor_rules_grant(
+    category: dict,
+    key: str,
+    perm_lookup: PermissionLookup | None,
+    device_id: str | None,
+    area_ids: set[str] | None,
+) -> bool:
+    """Return True when a parent floor grant covers the target.
+
+    Callers pass either a device identifier or the area identifiers to
+    resolve upward. Only an explicit positive floor grant counts.
+    """
+    floor_rules = category.get(ENTITY_FLOORS)
+    if floor_rules is True:
+        return True
+    if not isinstance(floor_rules, dict):
+        return False
+    if area_ids is None:
+        if device_id is None:
+            return False
+        area_ids = device_area_ids(perm_lookup, device_id)
+    return any(
+        (floor_id := area_floor_id(perm_lookup, area_id)) is not None
+        and _test_rule(floor_rules.get(floor_id), key) is True
+        for area_id in area_ids
+    )
 
 
 class AbstractPermissions:
@@ -144,6 +187,10 @@ class AbstractPermissions:
         """Check if we can access a domain."""
         raise NotImplementedError
 
+    def check_floor(self, floor_id: str, key: str) -> bool:
+        """Check if we can access a floor."""
+        raise NotImplementedError
+
 
 class PolicyPermissions(AbstractPermissions):
     """Handle permissions."""
@@ -173,12 +220,19 @@ class PolicyPermissions(AbstractPermissions):
     @override
     def check_area(self, area_id: str, key: str) -> bool:
         """Check if we can access an area."""
-        return resolve_target_permission(self._policy, TARGET_AREA, area_id, key)
+        return resolve_target_permission(
+            self._policy, TARGET_AREA, area_id, key, self._perm_lookup
+        )
 
     @override
     def check_domain(self, domain: str, key: str) -> bool:
         """Check if we can access a domain."""
         return resolve_target_permission(self._policy, TARGET_DOMAIN, domain, key)
+
+    @override
+    def check_floor(self, floor_id: str, key: str) -> bool:
+        """Check if we can access a floor."""
+        return resolve_target_permission(self._policy, TARGET_FLOOR, floor_id, key)
 
     @override
     def __eq__(self, other: object) -> bool:
@@ -212,6 +266,11 @@ class _OwnerPermissions(AbstractPermissions):
     @override
     def check_domain(self, domain: str, key: str) -> bool:
         """Check if we can access a domain."""
+        return True
+
+    @override
+    def check_floor(self, floor_id: str, key: str) -> bool:
+        """Check if we can access a floor."""
         return True
 
 
