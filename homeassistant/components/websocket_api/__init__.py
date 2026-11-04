@@ -27,6 +27,7 @@ from .const import (
 from .decorators import (
     async_response,
     require_admin,
+    require_configure_permission,
     websocket_command,
     ws_require_user,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "error_message",
     "event_message",
     "require_admin",
+    "require_configure_permission",
     "result_message",
     "websocket_command",
     "ws_require_user",

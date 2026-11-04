@@ -120,7 +120,7 @@ def websocket_delete_area(
         probatio.Optional("temperature_entity_id"): probatio.Any(str, None),
     }
 )
-@websocket_api.require_admin
+@websocket_api.require_configure_permission("area", "area_id")
 @callback
 def websocket_update_area(
     hass: HomeAssistant,

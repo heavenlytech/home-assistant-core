@@ -5,11 +5,11 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import ANY
+from pytest_homeassistant.common import ANY, MockUser
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
-from homeassistant.components.config import area_registry
+from homeassistant.components.config import DOMAIN, area_registry
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import (
     ATTR_DEVICE_CLASS,
@@ -19,6 +19,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar, label_registry as lr
+from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
 
@@ -571,3 +572,56 @@ async def test_reorder_areas_persistence(
 
     area_ids = [area.id for area in area_registry.async_list_areas()]
     assert area_ids == [area2.id, area3.id, area1.id]
+
+
+async def test_update_area_with_configure_permission(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_user: MockUser,
+    hass_read_only_access_token: str,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    """Test a non-admin with the configure right can update that area."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    area = area_registry.async_create("mock 1")
+    hass_read_only_user.policy = {
+        "entities": {"area_ids": {area.id: {"configure": True}}}
+    }
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/area_registry/update",
+            "area_id": area.id,
+            "name": "mock 2",
+        }
+    )
+
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    assert area_registry.async_get_area(area.id).name == "mock 2"
+
+
+async def test_update_area_denied_without_configure_permission(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    """Test a non-admin without the configure right cannot update an area."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    area = area_registry.async_create("mock 1")
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/area_registry/update",
+            "area_id": area.id,
+            "name": "mock 2",
+        }
+    )
+
+    msg = await client.receive_json()
+    assert not msg["success"], msg
+    assert msg["error"]["code"] == "unauthorized"
+    assert area_registry.async_get_area(area.id).name == "mock 1"

@@ -5,7 +5,12 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import MockConfigEntry, MockModule, mock_integration
+from pytest_homeassistant.common import (
+    MockConfigEntry,
+    MockModule,
+    MockUser,
+    mock_integration,
+)
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
@@ -1307,3 +1312,66 @@ async def test_list_linked_devices_child_device(
     msg = await client.receive_json()
     assert msg["success"]
     assert msg["result"] == {"linked_devices": []}
+
+
+async def test_update_device_with_configure_permission(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_user: MockUser,
+    hass_read_only_access_token: str,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test a non-admin with the configure right can update that device."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    entry = MockConfigEntry(title=None)
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("bridgeid", "0123")},
+    )
+    hass_read_only_user.policy = {
+        "entities": {"device_ids": {device.id: {"configure": True}}}
+    }
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/device_registry/update",
+            "device_id": device.id,
+            "name_by_user": "Allowed device",
+        }
+    )
+
+    msg = await client.receive_json()
+    assert msg["success"], msg
+    assert device_registry.async_get(device.id).name_by_user == "Allowed device"
+
+
+async def test_update_device_denied_without_configure_permission(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test a non-admin without the configure right cannot update a device."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    entry = MockConfigEntry(title=None)
+    entry.add_to_hass(hass)
+    device = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("bridgeid", "0123")},
+    )
+
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+    await client.send_json_auto_id(
+        {
+            "type": "config/device_registry/update",
+            "device_id": device.id,
+            "name_by_user": "Denied device",
+        }
+    )
+
+    msg = await client.receive_json()
+    assert not msg["success"], msg
+    assert msg["error"]["code"] == "unauthorized"
+    assert device_registry.async_get(device.id).name_by_user is None

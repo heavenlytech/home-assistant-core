@@ -8,7 +8,7 @@ import probatio
 
 from homeassistant import loader
 from homeassistant.components import websocket_api
-from homeassistant.components.websocket_api import require_admin
+from homeassistant.components.websocket_api import require_configure_permission
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, label_registry as lr
@@ -147,7 +147,7 @@ def websocket_list_linked_devices(
     connection.send_result(msg["id"], {"linked_devices": linked_devices})
 
 
-@require_admin
+@require_configure_permission("device", "device_id")
 @websocket_api.websocket_command(
     {
         probatio.Required("type"): "config/device_registry/update",

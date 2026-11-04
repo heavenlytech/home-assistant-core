@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import probatio
 
+from homeassistant.auth.permissions.const import POLICY_CONFIGURE
 from homeassistant.components.http.const import DATA_SUPERVISOR_USER
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
@@ -67,6 +68,50 @@ def require_admin(func: const.WebSocketCommandHandler) -> const.WebSocketCommand
         func(hass, connection, msg)
 
     return with_admin
+
+
+_TARGET_PERMISSION_CHECKS = {
+    "device": "check_device",
+    "area": "check_area",
+    "domain": "check_domain",
+}
+
+
+def require_configure_permission(
+    target_type: str, id_key: str
+) -> Callable[[const.WebSocketCommandHandler], const.WebSocketCommandHandler]:
+    """Require admin or the configure right on the target named in the message.
+
+    Administrators always pass. Other users pass only when their merged
+    policy grants the configure right on the device, area, or domain whose
+    identifier sits under id_key in the message.
+    """
+
+    def decorator(
+        func: const.WebSocketCommandHandler,
+    ) -> const.WebSocketCommandHandler:
+        check_method = _TARGET_PERMISSION_CHECKS[target_type]
+
+        @wraps(func)
+        def with_configure_permission(
+            hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+        ) -> None:
+            """Check permission and call function."""
+            user = connection.user
+
+            if user is None:
+                raise Unauthorized
+
+            if not user.is_admin and not getattr(user.permissions, check_method)(
+                msg[id_key], POLICY_CONFIGURE
+            ):
+                raise Unauthorized
+
+            func(hass, connection, msg)
+
+        return with_configure_permission
+
+    return decorator
 
 
 def ws_require_user(
