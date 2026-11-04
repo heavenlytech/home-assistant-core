@@ -4,10 +4,11 @@ from typing import Any
 
 import probatio
 
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ActiveConnection
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import floor_registry as fr
+from homeassistant.helpers import area_registry as ar, floor_registry as fr
 from homeassistant.helpers.floor_registry import FloorEntry
 
 
@@ -33,9 +34,22 @@ def websocket_list_floors(
 ) -> None:
     """Handle list floors command."""
     registry = fr.async_get(hass)
+    user = connection.user
+    floors = registry.async_list_floors()
+    if not user.is_admin:
+        # A floor is visible when it holds at least one readable area.
+        check_area = user.permissions.check_area
+        readable_floors = {
+            area.floor_id
+            for area in ar.async_get(hass).async_list_areas()
+            if area.floor_id is not None and check_area(area.id, POLICY_READ)
+        }
+        floors = [
+            entry for entry in floors if entry.floor_id in readable_floors
+        ]
     connection.send_result(
         msg["id"],
-        [_entry_dict(entry) for entry in registry.async_list_floors()],
+        [_entry_dict(entry) for entry in floors],
     )
 
 

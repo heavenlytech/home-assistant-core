@@ -7,6 +7,7 @@ from typing import Any
 import probatio
 
 from homeassistant import loader
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import require_configure_permission
 from homeassistant.core import HomeAssistant, callback
@@ -84,6 +85,16 @@ def websocket_list_devices(
 ) -> None:
     """Handle list devices command."""
     registry = dr.async_get(hass)
+    user = connection.user
+    if user.is_admin:
+        entries = chain(registry.devices, registry.child_devices)
+    else:
+        check_device = user.permissions.check_device
+        entries = (
+            entry
+            for entry in chain(registry.devices, registry.child_devices)
+            if check_device(entry.id, POLICY_READ)
+        )
     # Build start of response message
     msg_json_prefix = (
         f'{{"id":{msg["id"]},"type": "{websocket_api.TYPE_RESULT}",'
@@ -91,11 +102,7 @@ def websocket_list_devices(
     ).encode()
     # Concatenate cached entity registry item JSON serializations
     inner = b",".join(
-        [
-            entry.json_repr
-            for entry in chain(registry.devices, registry.child_devices)
-            if entry.json_repr is not None
-        ]
+        [entry.json_repr for entry in entries if entry.json_repr is not None]
     )
     msg_json = b"".join((msg_json_prefix, inner, b"]}"))
     connection.send_message(msg_json)

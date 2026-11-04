@@ -17,6 +17,8 @@ from homeassistant.util import dt as dt_util
 
 from . import permissions as perm_mdl
 from .const import GROUP_ID_ADMIN
+from .permissions.system_policies import ACCESS_MODE_OPEN_UNLESS_SPECIFIED
+from .permissions.util import policy_has_grants
 
 TOKEN_TYPE_NORMAL = "normal"
 TOKEN_TYPE_SYSTEM = "system"
@@ -90,9 +92,19 @@ class User:
         """Return permissions object for user."""
         if self.is_owner:
             return perm_mdl.OwnerPermissions
-        policies = [group.policy for group in self.groups]
-        if self.policy is not None:
-            policies.append(self.policy)
+        user_policy = self.policy
+        if (
+            user_policy is not None
+            and getattr(self.perm_lookup, "access_mode", None)
+            == ACCESS_MODE_OPEN_UNLESS_SPECIFIED
+            and policy_has_grants(user_policy)
+        ):
+            # Users holding direct rules are limited to those rules alone.
+            policies = [user_policy]
+        else:
+            policies = [group.policy for group in self.groups]
+            if user_policy is not None:
+                policies.append(user_policy)
         return perm_mdl.PolicyPermissions(
             perm_mdl.merge_policies(policies),
             self.perm_lookup,

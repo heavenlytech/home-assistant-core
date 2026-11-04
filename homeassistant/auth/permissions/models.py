@@ -14,3 +14,4 @@ class PermissionLookup:
 
     entity_registry: er.EntityRegistry = attr.ib()
     device_registry: dr.DeviceRegistry = attr.ib()
+    access_mode: str = attr.ib(default="open")

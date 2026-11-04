@@ -6,6 +6,7 @@ from typing import Any
 import probatio
 
 from homeassistant import config_entries
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api import ERR_NOT_FOUND, require_admin
 from homeassistant.core import HomeAssistant, callback
@@ -46,6 +47,16 @@ def websocket_list_entities(
 ) -> None:
     """Handle list registry entries command."""
     registry = er.async_get(hass)
+    user = connection.user
+    if user.is_admin:
+        entries = registry.entities.values()
+    else:
+        check_entity = user.permissions.check_entity
+        entries = (
+            entry
+            for entry in registry.entities.values()
+            if check_entity(entry.entity_id, POLICY_READ)
+        )
     # Build start of response message
     msg_json_prefix = (
         f'{{"id":{msg["id"]},"type": "{websocket_api.TYPE_RESULT}",'
@@ -55,7 +66,7 @@ def websocket_list_entities(
     inner = b",".join(
         [
             entry.partial_json_repr
-            for entry in registry.entities.values()
+            for entry in entries
             if entry.partial_json_repr is not None
         ]
     )
@@ -77,6 +88,16 @@ def websocket_list_entities_for_display(
 ) -> None:
     """Handle list registry entries command."""
     registry = er.async_get(hass)
+    user = connection.user
+    if user.is_admin:
+        entries = registry.entities.values()
+    else:
+        check_entity = user.permissions.check_entity
+        entries = (
+            entry
+            for entry in registry.entities.values()
+            if check_entity(entry.entity_id, POLICY_READ)
+        )
     # Build start of response message
     msg_json_prefix = (
         f'{{"id":{msg["id"]},"type":"{websocket_api.TYPE_RESULT}","success":true,'
@@ -86,7 +107,7 @@ def websocket_list_entities_for_display(
     inner = b",".join(
         [
             entry.display_json_repr
-            for entry in registry.entities.values()
+            for entry in entries
             if entry.disabled_by is None and entry.display_json_repr is not None
         ]
     )

@@ -7,6 +7,7 @@ from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant.common import (
     ANY,
+    CLIENT_ID,
     MockConfigEntry,
     MockEntity,
     MockEntityPlatform,
@@ -1799,3 +1800,51 @@ async def test_update_settings_requires_admin(
 
     assert msg["success"]
     assert msg["result"] == {"entity_id_parts": None}
+
+
+async def test_list_entities_filtered_for_restricted_user(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test entity lists only show readable entities to restricted users."""
+    entity_registry.async_setup(hass)
+    mock_registry(
+        hass,
+        {
+            "test_domain.allowed": RegistryEntryWithDefaults(
+                entity_id="test_domain.allowed",
+                unique_id="1234",
+                platform="test_platform",
+            ),
+            "test_domain.denied": RegistryEntryWithDefaults(
+                entity_id="test_domain.denied",
+                unique_id="5678",
+                platform="test_platform",
+            ),
+        },
+    )
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {
+        "entities": {"entity_ids": {"test_domain.allowed": {"read": True}}}
+    }
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/entity_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [entry["entity_id"] for entry in msg["result"]] == [
+        "test_domain.allowed"
+    ]
+
+    await client.send_json_auto_id(
+        {"type": "config/entity_registry/list_for_display"}
+    )
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [entry["ei"] for entry in msg["result"]["entities"]] == [
+        "test_domain.allowed"
+    ]

@@ -6,6 +6,7 @@ from typing import Any
 from freezegun.api import FrozenDateTimeFactory
 import pytest
 from pytest_homeassistant.common import (
+    CLIENT_ID,
     MockConfigEntry,
     MockModule,
     MockUser,
@@ -1375,3 +1376,34 @@ async def test_update_device_denied_without_configure_permission(
     assert not msg["success"], msg
     assert msg["error"]["code"] == "unauthorized"
     assert device_registry.async_get(device.id).name_by_user is None
+
+
+async def test_list_devices_filtered_for_restricted_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    device_registry: dr.DeviceRegistry,
+) -> None:
+    """Test device list only shows readable devices to restricted users."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    entry = MockConfigEntry(title=None)
+    entry.add_to_hass(hass)
+    allowed = device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("bridgeid", "0123")},
+    )
+    device_registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("bridgeid", "1234")},
+    )
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"device_ids": {allowed.id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/device_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [device["id"] for device in msg["result"]] == [allowed.id]

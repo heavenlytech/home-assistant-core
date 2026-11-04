@@ -4,6 +4,7 @@ from typing import Any
 
 import probatio
 
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar, label_registry as lr
@@ -31,9 +32,19 @@ def websocket_list_areas(
 ) -> None:
     """Handle list areas command."""
     registry = ar.async_get(hass)
+    user = connection.user
+    if user.is_admin:
+        areas = registry.async_list_areas()
+    else:
+        check_area = user.permissions.check_area
+        areas = [
+            entry
+            for entry in registry.async_list_areas()
+            if check_area(entry.id, POLICY_READ)
+        ]
     connection.send_result(
         msg["id"],
-        [entry.json_fragment for entry in registry.async_list_areas()],
+        [entry.json_fragment for entry in areas],
     )
 
 

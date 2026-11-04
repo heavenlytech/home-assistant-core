@@ -5,12 +5,14 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
+from pytest_homeassistant.common import CLIENT_ID, MockUser
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
-from homeassistant.components.config import floor_registry
+from homeassistant.components.config import DOMAIN, floor_registry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import floor_registry as fr
+from homeassistant.helpers import area_registry as ar, floor_registry as fr
+from homeassistant.setup import async_setup_component
 from homeassistant.util.dt import utcnow
 
 
@@ -450,3 +452,30 @@ async def test_reorder_floors_persistence(
 
     floor_ids = [floor.floor_id for floor in floor_registry.async_list_floors()]
     assert floor_ids == [floor2.floor_id, floor3.floor_id, floor1.floor_id]
+
+
+async def test_list_floors_filtered_for_restricted_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    floor_registry: fr.FloorRegistry,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    """Test floor list only shows floors holding readable areas."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    shown = floor_registry.async_create("First floor")
+    floor_registry.async_create("Second floor")
+    area = area_registry.async_create("mock 1", floor_id=shown.floor_id)
+    hidden_area = area_registry.async_create("mock 2")
+    assert hidden_area.floor_id is None
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"area_ids": {area.id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/floor_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [floor["floor_id"] for floor in msg["result"]] == [shown.floor_id]

@@ -93,6 +93,8 @@ class AuthStore:
         except KeyError as err:
             raise ValueError(f"Invalid access mode {mode}") from err
         self._access_mode = mode
+        if self._perm_lookup is not None:
+            self._perm_lookup.access_mode = mode
         self._groups[GROUP_ID_USER].policy = policy
         for user in self._users.values():
             user.invalidate_cache()
@@ -395,19 +397,19 @@ class AuthStore:
         ent_reg = er.async_get(self.hass)
         data = await self._store.async_load()
 
-        perm_lookup = PermissionLookup(ent_reg, dev_reg)
+        stored_mode = system_policies.ACCESS_MODE_OPEN
+        if isinstance(data, dict):
+            stored_mode = data.get("defaults", {}).get("mode", stored_mode)
+            if stored_mode not in system_policies.ACCESS_MODES:
+                stored_mode = system_policies.ACCESS_MODE_OPEN
+        self._access_mode = stored_mode
+
+        perm_lookup = PermissionLookup(ent_reg, dev_reg, stored_mode)
         self._perm_lookup = perm_lookup
 
         if data is None or not isinstance(data, dict):
             self._set_defaults()
             return
-
-        stored_mode = data.get("defaults", {}).get(
-            "mode", system_policies.ACCESS_MODE_OPEN
-        )
-        if stored_mode not in system_policies.ACCESS_MODES:
-            stored_mode = system_policies.ACCESS_MODE_OPEN
-        self._access_mode = stored_mode
 
         users: dict[str, models.User] = {}
         groups: dict[str, models.Group] = {}

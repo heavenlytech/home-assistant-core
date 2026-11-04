@@ -4,9 +4,9 @@ from collections.abc import Callable
 from functools import wraps
 from typing import cast
 
-from .const import SUBCAT_ALL
+from .const import CAT_ENTITIES, SUBCAT_ALL
 from .models import PermissionLookup
-from .types import CategoryType, SubCategoryDict, ValueType
+from .types import CategoryType, PolicyType, SubCategoryDict, ValueType
 
 type LookupFunc = Callable[[PermissionLookup, SubCategoryDict, str], ValueType | None]
 type SubCatLookupType = dict[str, LookupFunc]
@@ -96,6 +96,22 @@ def _gen_dict_test_func(
         return schema.get(key)
 
     return test_value
+
+
+def policy_has_grants(policy: PolicyType | None) -> bool:
+    """Return True when a policy holds at least one permission grant."""
+    if not policy:
+        return False
+    category = policy.get(CAT_ENTITIES)
+    if category is True:
+        return True
+    if not isinstance(category, dict):
+        return False
+    return any(
+        subcategory is True
+        or (isinstance(subcategory, dict) and len(subcategory) > 0)
+        for subcategory in category.values()
+    )
 
 
 def test_all(policy: CategoryType, key: str) -> bool:

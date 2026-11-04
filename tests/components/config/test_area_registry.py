@@ -5,7 +5,7 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant.common import ANY, MockUser
+from pytest_homeassistant.common import ANY, CLIENT_ID, MockUser
 from pytest_homeassistant.typing import MockHAClientWebSocket, WebSocketGenerator
 from pytest_unordered import unordered
 
@@ -625,3 +625,26 @@ async def test_update_area_denied_without_configure_permission(
     assert not msg["success"], msg
     assert msg["error"]["code"] == "unauthorized"
     assert area_registry.async_get_area(area.id).name == "mock 1"
+
+
+async def test_list_areas_filtered_for_restricted_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    """Test area list only shows readable areas to restricted users."""
+    assert await async_setup_component(hass, DOMAIN, {})
+    allowed = area_registry.async_create("mock 1")
+    area_registry.async_create("mock 2")
+
+    user = MockUser(is_active=True, groups=[]).add_to_hass(hass)
+    user.policy = {"entities": {"area_ids": {allowed.id: {"read": True}}}}
+    refresh_token = await hass.auth.async_create_refresh_token(user, CLIENT_ID)
+    access_token = hass.auth.async_create_access_token(refresh_token)
+
+    client = await hass_ws_client(hass, access_token)
+    await client.send_json_auto_id({"type": "config/area_registry/list"})
+    msg = await client.receive_json()
+
+    assert msg["success"], msg
+    assert [area["area_id"] for area in msg["result"]] == [allowed.id]
