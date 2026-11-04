@@ -393,3 +393,87 @@ async def test_set_expiry_date(
 
     store.async_set_expiry(token, enable_expiry=True)
     assert token.expire_at is not None
+
+
+async def test_access_mode_defaults_to_open(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Test the access mode starts open without stored defaults."""
+    hass_storage[auth_store.STORAGE_KEY] = MOCK_STORAGE_DATA
+
+    store = auth_store.AuthStore(hass)
+    await store.async_load()
+
+    assert await store.async_get_access_mode() == "open"
+    user_group = await store.async_get_group(auth_store.GROUP_ID_USER)
+    assert user_group is not None
+    assert user_group.policy == {"entities": True}
+
+
+async def test_access_mode_least_privileged_restricts_group(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Test least privileged mode empties the Users group policy."""
+    hass_storage[auth_store.STORAGE_KEY] = MOCK_STORAGE_DATA
+
+    store = auth_store.AuthStore(hass)
+    await store.async_load()
+    user = await store.async_create_user("Test User", group_ids=["system-users"])
+
+    assert user.permissions.check_entity("light.kitchen", "read") is True
+
+    await store.async_update_access_mode("least_privileged")
+
+    assert await store.async_get_access_mode() == "least_privileged"
+    user_group = await store.async_get_group(auth_store.GROUP_ID_USER)
+    assert user_group is not None
+    assert user_group.policy == {}
+    assert user.permissions.check_entity("light.kitchen", "read") is False
+
+    await store.async_update_access_mode("read_only")
+    assert user.permissions.check_entity("light.kitchen", "read") is True
+    assert user.permissions.check_entity("light.kitchen", "control") is False
+
+    await store.async_update_access_mode("open")
+    assert user.permissions.check_entity("light.kitchen", "control") is True
+
+
+async def test_access_mode_invalid_rejected(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Test an unknown access mode raises."""
+    hass_storage[auth_store.STORAGE_KEY] = MOCK_STORAGE_DATA
+
+    store = auth_store.AuthStore(hass)
+    await store.async_load()
+
+    with pytest.raises(ValueError, match="Invalid access mode"):
+        await store.async_update_access_mode("everything")
+
+
+async def test_access_mode_saved_and_loaded(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """Test the access mode round-trips through storage."""
+    hass_storage[auth_store.STORAGE_KEY] = MOCK_STORAGE_DATA
+
+    store = auth_store.AuthStore(hass)
+    await store.async_load()
+    await store.async_update_access_mode("least_privileged")
+
+    freezer.tick(auth_store.DEFAULT_SAVE_DELAY * 2)
+    await hass.async_block_till_done()
+    await hass.async_block_till_done()
+
+    assert hass_storage[auth_store.STORAGE_KEY]["data"]["defaults"] == {
+        "mode": "least_privileged"
+    }
+
+    reloaded = auth_store.AuthStore(hass)
+    await reloaded.async_load()
+    assert await reloaded.async_get_access_mode() == "least_privileged"
+    user_group = await reloaded.async_get_group(auth_store.GROUP_ID_USER)
+    assert user_group is not None
+    assert user_group.policy == {}

@@ -417,6 +417,14 @@ class AuthManager:
 
         self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user.id})
 
+    async def async_get_access_mode(self) -> str:
+        """Return the default access mode for ordinary users."""
+        return await self._store.async_get_access_mode()
+
+    async def async_update_access_mode(self, mode: str) -> None:
+        """Set the default access mode for ordinary users."""
+        await self._store.async_update_access_mode(mode)
+
     @callback
     def async_update_user_credentials_data(
         self, credentials: models.Credentials, data: dict[str, Any]

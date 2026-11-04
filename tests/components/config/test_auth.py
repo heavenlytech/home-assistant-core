@@ -620,3 +620,70 @@ async def test_permissions_get_update_and_clear(
     assert result["success"], result
     assert result["result"] == {"policy": {}}
     assert user.policy is None
+
+
+async def test_defaults_get_requires_admin(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Test reading default access requires an admin."""
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json({"id": 5, "type": "config/auth/defaults/get"})
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "unauthorized"
+
+
+async def test_defaults_update_requires_admin(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Test writing default access requires an admin."""
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/defaults/update", "mode": "open"}
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "unauthorized"
+
+
+async def test_defaults_update_invalid_mode(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test writing an unknown mode fails validation."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/defaults/update", "mode": "everything"}
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert await hass.auth.async_get_access_mode() == "open"
+
+
+async def test_defaults_get_and_update(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test reading and writing the default access mode."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json({"id": 5, "type": "config/auth/defaults/get"})
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"] == {"mode": "open"}
+
+    await client.send_json(
+        {"id": 6, "type": "config/auth/defaults/update", "mode": "least_privileged"}
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"] == {"mode": "least_privileged"}
+    assert await hass.auth.async_get_access_mode() == "least_privileged"

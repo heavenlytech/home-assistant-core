@@ -62,7 +62,8 @@ class AuthStore:
         self._users: dict[str, models.User] = None  # type: ignore[assignment]
         self._groups: dict[str, models.Group] = None  # type: ignore[assignment]
         self._perm_lookup: PermissionLookup = None  # type: ignore[assignment]
-        self._store = Store[dict[str, list[dict[str, Any]]]](
+        self._access_mode: str = system_policies.ACCESS_MODE_OPEN
+        self._store = Store[dict[str, Any]](
             hass, STORAGE_VERSION, STORAGE_KEY, private=True, atomic_writes=True
         )
         self._token_id_to_user_id: dict[str, str] = {}
@@ -75,6 +76,27 @@ class AuthStore:
     async def async_get_group(self, group_id: str) -> models.Group | None:
         """Retrieve all users."""
         return self._groups.get(group_id)
+
+    async def async_get_access_mode(self) -> str:
+        """Return the default access mode for ordinary users."""
+        return self._access_mode
+
+    async def async_update_access_mode(self, mode: str) -> None:
+        """Set the default access mode for ordinary users.
+
+        The mode decides what users without explicit grants can do:
+        everything, read only, or nothing. It applies to every member
+        of the Users group, including existing users.
+        """
+        try:
+            policy = system_policies.policy_for_access_mode(mode)
+        except KeyError as err:
+            raise ValueError(f"Invalid access mode {mode}") from err
+        self._access_mode = mode
+        self._groups[GROUP_ID_USER].policy = policy
+        for user in self._users.values():
+            user.invalidate_cache()
+        self._async_schedule_save()
 
     async def async_get_users(self) -> list[models.User]:
         """Retrieve all users."""
@@ -380,6 +402,13 @@ class AuthStore:
             self._set_defaults()
             return
 
+        stored_mode = data.get("defaults", {}).get(
+            "mode", system_policies.ACCESS_MODE_OPEN
+        )
+        if stored_mode not in system_policies.ACCESS_MODES:
+            stored_mode = system_policies.ACCESS_MODE_OPEN
+        self._access_mode = stored_mode
+
         users: dict[str, models.User] = {}
         groups: dict[str, models.Group] = {}
         credentials: dict[str, models.Credentials] = {}
@@ -412,7 +441,7 @@ class AuthStore:
                 has_user_group = True
 
                 name = GROUP_NAME_USER
-                policy = system_policies.USER_POLICY
+                policy = system_policies.policy_for_access_mode(self._access_mode)
                 system_generated = True
 
             elif group_dict["id"] == GROUP_ID_READ_ONLY:
@@ -462,7 +491,9 @@ class AuthStore:
             groups[read_only_group.id] = read_only_group
 
         if not has_user_group:
-            user_group = _system_user_group()
+            user_group = _system_user_group(
+                system_policies.policy_for_access_mode(self._access_mode)
+            )
             groups[user_group.id] = user_group
 
         for user_dict in data["users"]:
@@ -573,7 +604,7 @@ class AuthStore:
         self._store.async_delay_save(self._data_to_save, delay)
 
     @callback
-    def _data_to_save(self) -> dict[str, list[dict[str, Any]]]:
+    def _data_to_save(self) -> dict[str, Any]:
         """Return the data to store."""
         if self._usage_save_timer is not None:
             self._usage_save_timer.cancel()
@@ -651,6 +682,7 @@ class AuthStore:
             "groups": groups,
             "credentials": credentials,
             "refresh_tokens": refresh_tokens,
+            "defaults": {"mode": self._access_mode},
         }
 
     def _set_defaults(self) -> None:
@@ -660,7 +692,9 @@ class AuthStore:
         groups: dict[str, models.Group] = {}
         admin_group = _system_admin_group()
         groups[admin_group.id] = admin_group
-        user_group = _system_user_group()
+        user_group = _system_user_group(
+            system_policies.policy_for_access_mode(self._access_mode)
+        )
         groups[user_group.id] = user_group
         read_only_group = _system_read_only_group()
         groups[read_only_group.id] = read_only_group
@@ -678,12 +712,12 @@ def _system_admin_group() -> models.Group:
     )
 
 
-def _system_user_group() -> models.Group:
+def _system_user_group(policy: PolicyType | None = None) -> models.Group:
     """Create system user group."""
     return models.Group(
         name=GROUP_NAME_USER,
         id=GROUP_ID_USER,
-        policy=system_policies.USER_POLICY,
+        policy=policy if policy is not None else system_policies.USER_POLICY,
         system_generated=True,
     )
 

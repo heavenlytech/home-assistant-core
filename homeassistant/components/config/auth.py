@@ -6,6 +6,7 @@ import probatio
 
 from homeassistant.auth.models import User
 from homeassistant.auth.permissions import POLICY_SCHEMA
+from homeassistant.auth.permissions.system_policies import ACCESS_MODES
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
@@ -19,6 +20,8 @@ def async_setup(hass: HomeAssistant) -> bool:
     websocket_api.async_register_command(hass, websocket_update)
     websocket_api.async_register_command(hass, websocket_permissions_get)
     websocket_api.async_register_command(hass, websocket_permissions_update)
+    websocket_api.async_register_command(hass, websocket_defaults_get)
+    websocket_api.async_register_command(hass, websocket_defaults_update)
     return True
 
 
@@ -242,6 +245,47 @@ async def websocket_permissions_update(
 
     connection.send_message(
         websocket_api.result_message(msg["id"], {"policy": user.policy or {}})
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {probatio.Required("type"): "config/auth/defaults/get"}
+)
+@websocket_api.async_response
+async def websocket_defaults_get(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return the default access mode for ordinary users."""
+    connection.send_message(
+        websocket_api.result_message(
+            msg["id"], {"mode": await hass.auth.async_get_access_mode()}
+        )
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "config/auth/defaults/update",
+        probatio.Required("mode"): probatio.In(ACCESS_MODES),
+    }
+)
+@websocket_api.async_response
+async def websocket_defaults_update(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Set the default access mode for ordinary users."""
+    await hass.auth.async_update_access_mode(msg["mode"])
+
+    connection.send_message(
+        websocket_api.result_message(
+            msg["id"], {"mode": await hass.auth.async_get_access_mode()}
+        )
     )
 
 
