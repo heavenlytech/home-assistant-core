@@ -81,6 +81,24 @@ def _lookup_area(
     return area_dict.get(area_id)
 
 
+def device_area_ids(
+    perm_lookup: PermissionLookup | None, device_id: str
+) -> set[str]:
+    """Return the areas holding a device.
+
+    Uses the same effective-area resolution as entity checks so device
+    visibility always agrees with entity access.
+    """
+    if perm_lookup is None or perm_lookup.device_registry is None:
+        return set()
+    device_registry = perm_lookup.device_registry
+    device = device_registry.async_get(device_id)
+    if device is None:
+        return set()
+    area_id = dr.async_get_effective_area_id(device_registry.hass, device)
+    return {area_id} if area_id is not None else set()
+
+
 def _lookup_device(
     perm_lookup: PermissionLookup, devices_dict: SubCategoryDict, entity_id: str
 ) -> ValueType | None:

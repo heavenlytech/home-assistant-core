@@ -12,6 +12,7 @@ from .entities import (
     ENTITY_DOMAINS,
     ENTITY_POLICY_SCHEMA,
     compile_entities,
+    device_area_ids,
 )
 from .merge import merge_policies
 from .models import PermissionLookup
@@ -76,13 +77,18 @@ def _test_rule(rule: ValueType, key: str) -> bool | None:
 
 
 def resolve_target_permission(
-    policy: PolicyType, target_type: str, target_id: str, key: str
+    policy: PolicyType,
+    target_type: str,
+    target_id: str,
+    key: str,
+    perm_lookup: PermissionLookup | None = None,
 ) -> bool:
     """Resolve permission for one device, area, or domain target.
 
     This is the single shared resolver reused by every non-entity target:
-    the direct rule for the target wins, and the all rule is the fallback.
-    An explicit denial stops the lookup; a missing rule falls through.
+    the direct rule for the target wins, then the areas holding a device,
+    and the all rule is the fallback. An explicit denial stops the lookup;
+    a missing rule falls through.
     """
     category = policy.get(CAT_ENTITIES)
     if category is True:
@@ -95,6 +101,14 @@ def resolve_target_permission(
     if isinstance(subcategory, dict):
         if (result := _test_rule(subcategory.get(target_id), key)) is not None:
             return result
+    if target_type == TARGET_DEVICE:
+        area_rules = category.get(ENTITY_AREAS)
+        if area_rules is True:
+            return True
+        if isinstance(area_rules, dict):
+            for area_id in device_area_ids(perm_lookup, target_id):
+                if _test_rule(area_rules.get(area_id), key) is True:
+                    return True
     return _test_rule(category.get(SUBCAT_ALL), key) is True
 
 
@@ -152,7 +166,9 @@ class PolicyPermissions(AbstractPermissions):
     @override
     def check_device(self, device_id: str, key: str) -> bool:
         """Check if we can access a device."""
-        return resolve_target_permission(self._policy, TARGET_DEVICE, device_id, key)
+        return resolve_target_permission(
+            self._policy, TARGET_DEVICE, device_id, key, self._perm_lookup
+        )
 
     @override
     def check_area(self, area_id: str, key: str) -> bool:
