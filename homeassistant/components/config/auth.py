@@ -5,6 +5,7 @@ from typing import Any
 import probatio
 
 from homeassistant.auth.models import User
+from homeassistant.auth.permissions import POLICY_SCHEMA
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
@@ -16,6 +17,8 @@ def async_setup(hass: HomeAssistant) -> bool:
     websocket_api.async_register_command(hass, websocket_delete)
     websocket_api.async_register_command(hass, websocket_create)
     websocket_api.async_register_command(hass, websocket_update)
+    websocket_api.async_register_command(hass, websocket_permissions_get)
+    websocket_api.async_register_command(hass, websocket_permissions_update)
     return True
 
 
@@ -159,6 +162,86 @@ async def websocket_update(
 
     connection.send_message(
         websocket_api.result_message(msg_id, {"user": _user_info(user)})
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "config/auth/permissions/get",
+        probatio.Required("user_id"): str,
+    }
+)
+@websocket_api.async_response
+async def websocket_permissions_get(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Return the granular permission rules of a user."""
+    if not (user := await hass.auth.async_get_user(msg["user_id"])):
+        connection.send_message(
+            websocket_api.error_message(
+                msg["id"], websocket_api.ERR_NOT_FOUND, "User not found"
+            )
+        )
+        return
+
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"policy": user.policy or {}})
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        probatio.Required("type"): "config/auth/permissions/update",
+        probatio.Required("user_id"): str,
+        probatio.Required("policy"): probatio.Any(None, POLICY_SCHEMA),
+    }
+)
+@websocket_api.async_response
+async def websocket_permissions_update(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+) -> None:
+    """Set or clear the granular permission rules of a user.
+
+    A policy of None clears every direct rule of the user.
+    """
+    if not (user := await hass.auth.async_get_user(msg["user_id"])):
+        connection.send_message(
+            websocket_api.error_message(
+                msg["id"], websocket_api.ERR_NOT_FOUND, "User not found"
+            )
+        )
+        return
+
+    if user.system_generated:
+        connection.send_message(
+            websocket_api.error_message(
+                msg["id"],
+                "cannot_modify_system_generated",
+                "Unable to update system generated users.",
+            )
+        )
+        return
+
+    if user.is_owner:
+        connection.send_message(
+            websocket_api.error_message(
+                msg["id"],
+                "cannot_modify_owner_permissions",
+                "The owner always has full access.",
+            )
+        )
+        return
+
+    await hass.auth.async_update_user_policy(user, msg["policy"])
+
+    connection.send_message(
+        websocket_api.result_message(msg["id"], {"policy": user.policy or {}})
     )
 
 

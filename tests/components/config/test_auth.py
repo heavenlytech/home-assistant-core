@@ -430,3 +430,193 @@ async def test_deactivate_system_generated(
     result = await client.receive_json()
     assert not result["success"], result
     assert result["error"]["code"] == "cannot_modify_system_generated"
+
+
+async def test_permissions_get_requires_admin(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Test reading user rules requires an admin."""
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/permissions/get", "user_id": "abcd"}
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "unauthorized"
+
+
+async def test_permissions_update_requires_admin(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """Test writing user rules requires an admin."""
+    client = await hass_ws_client(hass, hass_read_only_access_token)
+
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/permissions/update",
+            "user_id": "abcd",
+            "policy": {},
+        }
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "unauthorized"
+
+
+async def test_permissions_get_unknown_user(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test reading rules of an unknown user fails."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/permissions/get", "user_id": "abcd"}
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "not_found"
+
+
+async def test_permissions_update_unknown_user(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test writing rules of an unknown user fails."""
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/permissions/update",
+            "user_id": "abcd",
+            "policy": {},
+        }
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "not_found"
+
+
+async def test_permissions_update_owner(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test the owner keeps full access and takes no direct rules."""
+    owner = MockUser(id="abc", name="Test Owner", is_owner=True).add_to_hass(hass)
+
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/permissions/update",
+            "user_id": owner.id,
+            "policy": {},
+        }
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "cannot_modify_owner_permissions"
+
+
+async def test_permissions_update_system_generated(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test system generated users take no direct rules."""
+    user = MockUser(id="abc", name="System", system_generated=True).add_to_hass(hass)
+
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/permissions/update",
+            "user_id": user.id,
+            "policy": {},
+        }
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert result["error"]["code"] == "cannot_modify_system_generated"
+
+
+async def test_permissions_update_invalid_policy(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test writing an invalid policy fails validation."""
+    user = MockUser(id="abc", name="Test User").add_to_hass(hass)
+
+    client = await hass_ws_client(hass)
+    await client.send_json(
+        {
+            "id": 5,
+            "type": "config/auth/permissions/update",
+            "user_id": user.id,
+            "policy": {"entities": {"device_ids": {"device-1": {"fly": True}}}},
+        }
+    )
+
+    result = await client.receive_json()
+    assert not result["success"], result
+    assert user.policy is None
+
+
+async def test_permissions_get_update_and_clear(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Test writing, reading, and clearing the rules of a user."""
+    user = MockUser(id="abc", name="Test User").add_to_hass(hass)
+    client = await hass_ws_client(hass)
+
+    await client.send_json(
+        {"id": 5, "type": "config/auth/permissions/get", "user_id": user.id}
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"] == {"policy": {}}
+
+    policy = {
+        "entities": {
+            "device_ids": {"device-1": {"read": True, "control": True}},
+            "area_ids": {"area-1": {"read": True}},
+            "domains": {"light": {"configure": True}},
+        }
+    }
+    await client.send_json(
+        {
+            "id": 6,
+            "type": "config/auth/permissions/update",
+            "user_id": user.id,
+            "policy": policy,
+        }
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"] == {"policy": policy}
+    assert user.policy == policy
+    assert user.permissions.check_device("device-1", "read") is True
+    assert user.permissions.check_device("device-1", "control") is True
+    assert user.permissions.check_area("area-1", "read") is True
+    assert user.permissions.check_domain("light", "configure") is True
+    assert user.permissions.check_domain("switch", "configure") is False
+
+    await client.send_json(
+        {
+            "id": 7,
+            "type": "config/auth/permissions/update",
+            "user_id": user.id,
+            "policy": None,
+        }
+    )
+    result = await client.receive_json()
+    assert result["success"], result
+    assert result["result"] == {"policy": {}}
+    assert user.policy is None

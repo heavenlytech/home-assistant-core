@@ -7,7 +7,13 @@ import probatio
 
 from homeassistant.helpers import device_registry as dr
 
-from .const import POLICY_CONTROL, POLICY_EDIT, POLICY_READ, SUBCAT_ALL
+from .const import (
+    POLICY_CONFIGURE,
+    POLICY_CONTROL,
+    POLICY_EDIT,
+    POLICY_READ,
+    SUBCAT_ALL,
+)
 from .models import PermissionLookup
 from .types import CategoryType, SubCategoryDict, ValueType
 from .util import SubCatLookupType, compile_policy, lookup_all
@@ -19,6 +25,7 @@ SINGLE_ENTITY_SCHEMA = probatio.Any(
             probatio.Optional(POLICY_READ): True,
             probatio.Optional(POLICY_CONTROL): True,
             probatio.Optional(POLICY_EDIT): True,
+            probatio.Optional(POLICY_CONFIGURE): True,
         }
     ),
 )

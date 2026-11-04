@@ -31,6 +31,7 @@ from . import auth_store, jwt_wrapper, models
 from .const import ACCESS_TOKEN_EXPIRATION, GROUP_ID_ADMIN, REFRESH_TOKEN_EXPIRATION
 from .mfa_modules import MultiFactorAuthModule, auth_mfa_module_from_config
 from .models import AuthFlowContext, AuthFlowResult
+from .permissions.types import PolicyType
 from .providers import AuthProvider, LoginFlow, auth_provider_from_config
 
 _LOGGER = logging.getLogger(__name__)
@@ -402,6 +403,17 @@ class AuthManager:
                 await self.async_activate_user(user)
             else:
                 await self.async_deactivate_user(user)
+
+        self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user.id})
+
+    async def async_update_user_policy(
+        self, user: models.User, policy: PolicyType | None
+    ) -> None:
+        """Set or clear the granular permission rules of a user.
+
+        A policy of None clears every direct rule of the user.
+        """
+        await self._store.async_update_user_policy(user, policy)
 
         self.hass.bus.async_fire(EVENT_USER_UPDATED, {"user_id": user.id})
 

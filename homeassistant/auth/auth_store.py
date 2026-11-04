@@ -93,6 +93,7 @@ class AuthStore:
         credentials: models.Credentials | None = None,
         group_ids: list[str] | None = None,
         local_only: bool | None = None,
+        policy: PolicyType | None = None,
     ) -> models.User:
         """Create a new user."""
         groups = []
@@ -117,6 +118,7 @@ class AuthStore:
                     ("is_active", is_active),
                     ("local_only", local_only),
                     ("system_generated", system_generated),
+                    ("policy", policy),
                 )
                 if value is not None
             }
@@ -160,6 +162,7 @@ class AuthStore:
         is_active: bool | None = None,
         group_ids: list[str] | None = None,
         local_only: bool | None = None,
+        policy: PolicyType | None = None,
     ) -> None:
         """Update a user."""
         if group_ids is not None:
@@ -175,10 +178,21 @@ class AuthStore:
             ("name", name),
             ("is_active", is_active),
             ("local_only", local_only),
+            ("policy", policy),
         ):
             if value is not None:
                 setattr(user, attr_name, value)
 
+        self._async_schedule_save()
+
+    async def async_update_user_policy(
+        self, user: models.User, policy: PolicyType | None
+    ) -> None:
+        """Set or clear the granular permission rules of a user.
+
+        A policy of None clears every direct rule of the user.
+        """
+        user.policy = policy
         self._async_schedule_save()
 
     async def async_activate_user(self, user: models.User) -> None:
@@ -474,6 +488,7 @@ class AuthStore:
                 perm_lookup=perm_lookup,
                 # New in 2021.11
                 local_only=user_dict.get("local_only", False),
+                policy=user_dict.get("policy"),
             )
 
         for cred_dict in data["credentials"]:
@@ -563,8 +578,9 @@ class AuthStore:
         if self._usage_save_timer is not None:
             self._usage_save_timer.cancel()
             self._usage_save_timer = None
-        users = [
-            {
+        users = []
+        for user in self._users.values():
+            user_dict: dict[str, Any] = {
                 "id": user.id,
                 "group_ids": [group.id for group in user.groups],
                 "is_owner": user.is_owner,
@@ -573,8 +589,9 @@ class AuthStore:
                 "system_generated": user.system_generated,
                 "local_only": user.local_only,
             }
-            for user in self._users.values()
-        ]
+            if user.policy is not None:
+                user_dict["policy"] = user.policy
+            users.append(user_dict)
 
         groups = []
         for group in self._groups.values():

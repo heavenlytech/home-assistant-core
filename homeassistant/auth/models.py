@@ -70,6 +70,13 @@ class User:
         factory=list, eq=False, order=False, on_setattr=_handle_permissions_change
     )
 
+    # Granular permission rules granted directly to this user. Merged with
+    # the group policies, where the most permissive rule wins. None means
+    # the user carries no direct rules.
+    policy: perm_mdl.PolicyType | None = attr.ib(
+        default=None, eq=False, order=False, on_setattr=_handle_permissions_change
+    )
+
     # List of credentials of a user.
     credentials: list[Credentials] = attr.ib(factory=list, eq=False, order=False)
 
@@ -83,8 +90,11 @@ class User:
         """Return permissions object for user."""
         if self.is_owner:
             return perm_mdl.OwnerPermissions
+        policies = [group.policy for group in self.groups]
+        if self.policy is not None:
+            policies.append(self.policy)
         return perm_mdl.PolicyPermissions(
-            perm_mdl.merge_policies([group.policy for group in self.groups]),
+            perm_mdl.merge_policies(policies),
             self.perm_lookup,
         )
 
